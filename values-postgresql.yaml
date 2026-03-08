@@ -1,0 +1,24 @@
+# Bitnami PostgreSQL Helm chart values for MLFlow backend
+# Release name: mlflow-db -> service: mlflow-db-postgresql
+#
+# IMPORTANT: Do not hardcode passwords here.
+# Use the .env file and pass values via --set flags:
+#
+#   source .env
+#   helm install mlflow-db bitnami/postgresql \
+#     --set auth.username=$POSTGRES_USER \
+#     --set auth.password=$POSTGRES_PASSWORD \
+#     --set auth.database=$POSTGRES_DB \
+#     --set auth.postgresPassword=$POSTGRES_ADMIN_PASSWORD \
+#     -f values-postgresql.yaml
+
+auth:
+  username: ""      # Overridden by --set auth.username=$POSTGRES_USER
+  password: ""      # Overridden by --set auth.password=$POSTGRES_PASSWORD
+  database: ""      # Overridden by --set auth.database=$POSTGRES_DB
+  postgresPassword: ""  # Overridden by --set auth.postgresPassword=$POSTGRES_ADMIN_PASSWORD
+
+primary:
+  persistence:
+    enabled: true
+    size: 2Gi

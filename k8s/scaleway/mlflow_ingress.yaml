@@ -1,0 +1,21 @@
+# Ingress for MLflow dashboard with nginx basic auth
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mlflow-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: mlflow-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required - MLflow"
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: mlflow-service
+            port:
+              number: 5000

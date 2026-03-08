@@ -1,0 +1,13 @@
+# ClusterIP Service for MLflow dashboard (exposed via Ingress)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-service
+spec:
+  type: ClusterIP
+  selector:
+    app: mlflow-dashboard
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 8080

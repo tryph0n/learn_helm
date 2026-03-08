@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow-deployment
+spec:
+  selector:
+    matchLabels:
+      app: mlflow-dashboard
+  replicas: 2 # tells deployment to run 2 pods matching the template
+  template:
+    metadata:
+      labels:
+        app: mlflow-dashboard
+    spec:
+      containers:
+        - name: mlflow-server
+          image: sambot961/image-mlflow
+          imagePullPolicy: Always
+          envFrom:
+            - secretRef:
+                name: mlflow-env-variables
+          ports:
+            - containerPort: 8080
