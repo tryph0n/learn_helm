@@ -1,13 +1,26 @@
 [project]
 name = "learn-helm"
 version = "0.1.0"
-description = "MLflow training script for learn_helm project"
+description = "Training script that logs to an MLflow server deployed on Kubernetes with a Helm chart"
 readme = "README.md"
-requires-python = "==3.10.*"
+requires-python = "==3.12.*"
 dependencies = [
-    "mlflow==2.21.3",
+    "mlflow==3.18.0",
     "openpyxl>=3.1.5",
     "pandas>=2.3.3",
     "python-dotenv>=1.2.2",
     "scikit-learn>=1.4,<2",
 ]
+
+[project.urls]
+Repository = "https://github.com/tryph0n/learn_helm"
+
+[dependency-groups]
+dev = ["ruff==0.15.0", "pytest>=9.2.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.check-readme-links]
+files = ["README.md", "docs", "k8s"]

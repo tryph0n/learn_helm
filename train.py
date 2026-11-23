@@ -1,20 +1,20 @@
 import argparse
-import pandas as pd
 import time
+
 import mlflow
+import pandas as pd
+from dotenv import load_dotenv
 from mlflow.models.signature import infer_signature
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-# MLFlow reads MLFLOW_TRACKING_URI automatically from environment
-load_dotenv()
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 if __name__ == "__main__":
+    # Load environment variables from .env file
+    # MLFlow reads MLFLOW_TRACKING_URI automatically from environment
+    load_dotenv()
 
     ### MLFLOW Experiment setup
     experiment_name = "ibm_attrition_detector"
@@ -53,9 +53,9 @@ if __name__ == "__main__":
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3)
 
     # Preprocessing
-    categorical_features = X_train.select_dtypes(
-        "object"
-    ).columns  # Select all the columns containing strings
+    categorical_features = list(
+        X_train.select_dtypes("object").columns
+    )  # Select all the columns containing strings
     categorical_transformer = OneHotEncoder(
         drop="first", handle_unknown="error", sparse_output=False
     )
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     numerical_feature_mask = ~X_train.columns.isin(
         X_train.select_dtypes("object").columns
     )  # Select all the columns containing anything else than strings
-    numerical_features = X_train.columns[numerical_feature_mask]
+    numerical_features = list(X_train.columns[numerical_feature_mask])
     numerical_transformer = StandardScaler()
 
     preprocessor = ColumnTransformer(
@@ -98,10 +98,11 @@ if __name__ == "__main__":
         # Log model separately to have more flexibility on setup
         mlflow.sklearn.log_model(
             sk_model=model,
-            artifact_path="ibm_attrition_detector",
+            name="ibm_attrition_detector",
             registered_model_name="ibm_attrition_detector_RF",
             signature=infer_signature(X_train, predictions),
+            skops_trusted_types=["sklearn.tree._tree.Tree"],
         )
 
     print("...Done!")
-    print(f"---Total training time: {time.time()-start_time}")
+    print(f"---Total training time: {time.time() - start_time}")
