@@ -1,0 +1,19 @@
+# Local cluster (k3s, or k3d in CI): NodePort Service, no Ingress, local S3 with moto.
+# Create the Secret "mlflow-credentials" first (see docs/local.md).
+
+service:
+  type: NodePort
+  port: 5000
+
+ingress:
+  enabled: false
+
+postgresql:
+  auth:
+    existingSecret: mlflow-credentials
+
+s3:
+  existingSecret: mlflow-credentials
+
+moto:
+  enabled: true

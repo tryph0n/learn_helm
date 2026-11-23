@@ -1,0 +1,188 @@
+nameOverride: ""
+fullnameOverride: ""
+
+# Keep 1 replica: on a fresh database, two pods would run the schema migration at the same time.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/tryph0n/mlflow-k8s-helm
+  # <MLflow version>-<image revision>. A new image with the same MLflow version gets a new revision.
+  tag: "3.18.0-1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  # Name of the ServiceAccount. Empty: the chart full name.
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+mlflow:
+  # Container port of the MLflow server (the PORT variable of the image).
+  port: 8080
+  # Extra entries for MLFLOW_SERVER_ALLOWED_HOSTS (MLflow host check).
+  # The chart always allows the Service DNS names, localhost, 127.0.0.1, the private IP ranges
+  # and ingress.host. Add the public IP or the domain that clients use, for example "203.0.113.10".
+  allowedHosts: []
+  # Extra entries for MLFLOW_SERVER_CORS_ALLOWED_ORIGINS. MLflow refuses changes (POST, PUT, DELETE)
+  # from a browser page whose origin is not localhost or in this list. The chart adds
+  # http://<ingress.host> and https://<ingress.host>. Add the URL that users open, for example
+  # "http://203.0.113.10".
+  corsAllowedOrigins: []
+  # Number of server worker processes (MLFLOW_WORKERS; MLflow default: 4). Each one uses about 200 MiB.
+  workers: 2
+  # MLflow 3 job execution (MLFLOW_SERVER_ENABLE_JOB_EXECUTION). When on, the server starts about nine
+  # extra processes (about 1.5 GiB) for GenAI jobs such as scorers. Tracking does not need them.
+  jobExecution: false
+  # Extra environment variables for the MLflow container.
+  extraEnv: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 768Mi
+  limits:
+    memory: 1536Mi
+
+# The server runs the database migrations before it listens: the startup probe allows 5 minutes.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 5
+  failureThreshold: 60
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 20
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+service:
+  type: ClusterIP
+  port: 5000
+  # Fixed node port when service.type is NodePort. Empty: Kubernetes picks one.
+  nodePort: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Host name of the Ingress rule. Empty: the rule matches every host.
+  host: ""
+  tls: []
+
+# The MLflow server writes the artifacts here itself (proxied artifacts): clients need no S3 keys.
+artifacts:
+  destination: s3://mlflow/artifacts
+
+s3:
+  # Secret with the S3 keys. The chart creates no Secret: create it with kubectl.
+  existingSecret: ""
+  accessKeyIdKey: aws-access-key-id
+  secretAccessKeyKey: aws-secret-access-key
+  # S3 endpoint for S3-compatible storage. Empty: AWS S3, or the moto Service if moto.enabled.
+  endpointUrl: ""
+  region: us-east-1
+
+postgresql:
+  # true: the chart runs PostgreSQL in a StatefulSet. false: use externalDatabase.
+  enabled: true
+  image:
+    repository: postgres
+    tag: "17.12"
+    pullPolicy: IfNotPresent
+  auth:
+    username: mlflow
+    database: mlflow
+    # Secret with the database password. The chart creates no Secret: create it with kubectl.
+    existingSecret: ""
+    passwordKey: postgres-password
+  port: 5432
+  persistence:
+    size: 2Gi
+    # Empty: the default StorageClass of the cluster.
+    storageClass: ""
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+# Used when postgresql.enabled is false, for example a managed PostgreSQL database.
+externalDatabase:
+  host: ""
+  port: 5432
+  database: mlflow
+  username: mlflow
+  existingSecret: ""
+  passwordKey: postgres-password
+
+# Local S3 server (moto). It keeps the data in memory: the artifacts are lost when the pod restarts.
+moto:
+  enabled: false
+  image:
+    repository: motoserver/moto
+    tag: "5.2.5"
+    pullPolicy: IfNotPresent
+  port: 5000
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,189 @@
+{{- $bucket := include "mlflow.s3.bucket" . }}
+{{- $endpoint := include "mlflow.s3.endpointUrl" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mlflow.fullname" . }}
+  labels:
+    {{- include "mlflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mlflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "mlflow.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "mlflow.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        # Waits for the database (and moto), then creates the moto bucket when it is missing.
+        - name: wait-for-dependencies
+          image: {{ include "mlflow.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: DB_HOST
+              value: {{ include "mlflow.db.host" . | quote }}
+            - name: DB_PORT
+              value: {{ include "mlflow.db.port" . | quote }}
+            {{- if .Values.moto.enabled }}
+            - name: CREATE_BUCKET
+              value: {{ $bucket | quote }}
+            - name: MOTO_HOST
+              value: {{ include "mlflow.moto.fullname" . | quote }}
+            - name: MOTO_PORT
+              value: {{ .Values.moto.port | quote }}
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: {{ $endpoint | quote }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.s3.region | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mlflow.s3.secretName" . }}
+                  key: {{ .Values.s3.accessKeyIdKey }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mlflow.s3.secretName" . }}
+                  key: {{ .Values.s3.secretAccessKeyKey }}
+            {{- end }}
+          command: ["python", "-c"]
+          args:
+            - |
+              import logging
+              import os
+              import socket
+              import time
+
+              logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+              log = logging.getLogger("wait-for-dependencies")
+
+
+              def wait_for(host, port, timeout=300):
+                  deadline = time.monotonic() + timeout
+                  while True:
+                      try:
+                          socket.create_connection((host, port), timeout=3).close()
+                          log.info("%s:%s is reachable", host, port)
+                          return
+                      except OSError as err:
+                          if time.monotonic() > deadline:
+                              raise SystemExit(f"{host}:{port} is not reachable: {err}")
+                          log.info("waiting for %s:%s", host, port)
+                          time.sleep(2)
+
+
+              wait_for(os.environ["DB_HOST"], int(os.environ["DB_PORT"]))
+              bucket = os.environ.get("CREATE_BUCKET")
+              if bucket:
+                  import boto3
+                  from botocore.exceptions import ClientError
+
+                  wait_for(os.environ["MOTO_HOST"], int(os.environ["MOTO_PORT"]))
+                  s3 = boto3.client("s3", endpoint_url=os.environ["MLFLOW_S3_ENDPOINT_URL"])
+                  try:
+                      s3.head_bucket(Bucket=bucket)
+                      log.info("bucket %s exists", bucket)
+                  except ClientError as err:
+                      if err.response["Error"]["Code"] not in ("404", "NoSuchBucket"):
+                          raise
+                      region = os.environ["AWS_DEFAULT_REGION"]
+                      config = {} if region == "us-east-1" else {
+                          "CreateBucketConfiguration": {"LocationConstraint": region}
+                      }
+                      s3.create_bucket(Bucket=bucket, **config)
+                      log.info("bucket %s created", bucket)
+      containers:
+        - name: mlflow
+          image: {{ include "mlflow.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: PORT
+              value: {{ .Values.mlflow.port | quote }}
+            - name: MLFLOW_WORKERS
+              value: {{ .Values.mlflow.workers | quote }}
+            - name: MLFLOW_SERVER_ENABLE_JOB_EXECUTION
+              value: {{ .Values.mlflow.jobExecution | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mlflow.db.secretName" . }}
+                  key: {{ include "mlflow.db.passwordKey" . }}
+            # $(POSTGRES_PASSWORD) is expanded by Kubernetes. Use a password without "@", ":", "/" or "%".
+            # "+psycopg2": SQLAlchemy 2.1 uses psycopg 3 for "postgresql://", the image has psycopg2.
+            - name: BACKEND_STORE_URI
+              value: {{ printf "postgresql+psycopg2://%s:$(POSTGRES_PASSWORD)@%s:%s/%s" (include "mlflow.db.username" .) (include "mlflow.db.host" .) (include "mlflow.db.port" .) (include "mlflow.db.database" .) | quote }}
+            - name: ARTIFACT_ROOT
+              value: {{ .Values.artifacts.destination | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mlflow.s3.secretName" . }}
+                  key: {{ .Values.s3.accessKeyIdKey }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mlflow.s3.secretName" . }}
+                  key: {{ .Values.s3.secretAccessKeyKey }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.s3.region | quote }}
+            {{- with $endpoint }}
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: {{ . | quote }}
+            {{- end }}
+            - name: MLFLOW_SERVER_ALLOWED_HOSTS
+              value: {{ include "mlflow.allowedHosts" . | quote }}
+            {{- with include "mlflow.corsAllowedOrigins" . }}
+            - name: MLFLOW_SERVER_CORS_ALLOWED_ORIGINS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.mlflow.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mlflow.port }}
+              protocol: TCP
+          startupProbe:
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
