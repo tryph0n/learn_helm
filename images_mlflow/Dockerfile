@@ -1,25 +1,16 @@
-FROM python:3.10
+FROM python:3.12.16-slim-trixie
 
-WORKDIR /home/app
+COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /bin/uv
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends nano unzip curl \
-    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt /tmp/requirements.txt
+RUN uv pip install --system --no-cache -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt \
+    && useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin mlflow
 
-COPY . .
+USER 10001
+WORKDIR /home/mlflow
 
-RUN ARCH=$(uname -m) && \
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip" -o "awscliv2.zip" && \
-    unzip awscliv2.zip && \
-    ./aws/install && \
-    rm -rf awscliv2.zip aws/
+ENV PORT=8080
+EXPOSE 8080
 
-# Install uv and use it to install Python dependencies
-RUN pip install uv
-COPY requirements.txt /dependencies/requirements.txt
-RUN uv pip install --system -r /dependencies/requirements.txt
-
-CMD mlflow server -p $PORT \
-    --host 0.0.0.0 \
-    --backend-store-uri $BACKEND_STORE_URI \
-    --default-artifact-root $ARTIFACT_ROOT
+CMD ["sh", "-c", "exec mlflow server --host 0.0.0.0 --port \"$PORT\" --backend-store-uri \"$BACKEND_STORE_URI\" --serve-artifacts --artifacts-destination \"$ARTIFACT_ROOT\""]
