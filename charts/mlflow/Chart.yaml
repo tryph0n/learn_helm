@@ -10,6 +10,6 @@ keywords:
   - postgresql
   - s3
 sources:
-  - https://github.com/tryph0n/learn_helm
+  - https://github.com/tryph0n/mlflow-k8s-helm
 maintainers:
   - name: Samy Saad

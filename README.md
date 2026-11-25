@@ -1,6 +1,6 @@
 # MLflow on Kubernetes
 
-[![CI](https://github.com/tryph0n/learn_helm/actions/workflows/ci.yml/badge.svg)](https://github.com/tryph0n/learn_helm/actions/workflows/ci.yml)
+[![CI](https://github.com/tryph0n/mlflow-k8s-helm/actions/workflows/ci.yml/badge.svg)](https://github.com/tryph0n/mlflow-k8s-helm/actions/workflows/ci.yml)
 
 Deploy an MLflow tracking server on Kubernetes with a Helm chart: PostgreSQL stores the metadata, S3 stores the artifacts. Two deployment modes: local (k3s, with a local S3 server) and cloud (Scaleway Kapsule, with a real S3 bucket).
 
@@ -68,7 +68,7 @@ The Scaleway mode also needs an S3 bucket: [AWS S3](https://aws.amazon.com/s3/) 
 ## Quick Start
 
 ```bash
-git clone https://github.com/tryph0n/learn_helm.git && cd learn_helm
+git clone https://github.com/tryph0n/mlflow-k8s-helm.git && cd mlflow-k8s-helm
 cp .env.example .env   # then fill in the values
 # Follow the deployment guide for your target:
 #   Local (k3s)       -> docs/local.md
