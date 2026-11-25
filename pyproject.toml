@@ -1,5 +1,5 @@
 [project]
-name = "learn-helm"
+name = "mlflow-k8s-helm"
 version = "0.1.0"
 description = "Training script that logs to an MLflow server deployed on Kubernetes with a Helm chart"
 readme = "README.md"
