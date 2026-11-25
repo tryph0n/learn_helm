@@ -1,5 +1,5 @@
 [project]
-name = "learn-helm"
+name = "mlflow-k8s-helm"
 version = "0.1.0"
 description = "Training script that logs to an MLflow server deployed on Kubernetes with a Helm chart"
 readme = "README.md"
@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/tryph0n/learn_helm"
+Repository = "https://github.com/tryph0n/mlflow-k8s-helm"
 
 [dependency-groups]
 dev = ["ruff==0.15.0", "pytest>=9.2.0"]
