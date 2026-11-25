@@ -1,0 +1,30 @@
+MLflow {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Secrets used (the chart creates none):
+  - database password: Secret "{{ include "mlflow.db.secretName" . }}", key "{{ include "mlflow.db.passwordKey" . }}"
+  - S3 keys: Secret "{{ include "mlflow.s3.secretName" . }}", keys "{{ .Values.s3.accessKeyIdKey }}" and "{{ .Values.s3.secretAccessKeyKey }}"
+
+Artifacts go to {{ .Values.artifacts.destination }}{{ if .Values.moto.enabled }} (moto, in memory: lost when the moto pod restarts){{ end }}.
+
+Wait for the pods:
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+
+Open MLflow with a port-forward:
+  kubectl port-forward svc/{{ include "mlflow.fullname" . }} 5000:{{ .Values.service.port }}
+  curl http://localhost:5000/health
+  export MLFLOW_TRACKING_URI=http://localhost:5000
+{{- if eq .Values.service.type "NodePort" }}
+
+Or use the NodePort:
+  kubectl get svc {{ include "mlflow.fullname" . }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+Or use the Ingress:
+  kubectl get ingress {{ include "mlflow.fullname" . }}
+  If users open an IP address or a domain other than ingress.host, add it to mlflow.allowedHosts
+  and its URL (for example http://<EXTERNAL_IP>) to mlflow.corsAllowedOrigins.
+{{- end }}
+
+Check the release:
+  helm test {{ .Release.Name }}

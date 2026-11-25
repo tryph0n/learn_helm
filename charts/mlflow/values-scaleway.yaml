@@ -1,0 +1,41 @@
+# Scaleway Kapsule: ClusterIP Service behind an nginx Ingress with basic auth, real S3, no moto.
+# Create the Secrets "mlflow-credentials" and "mlflow-basic-auth" first (see docs/scaleway.md).
+
+service:
+  type: ClusterIP
+  port: 5000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: mlflow-basic-auth
+    nginx.ingress.kubernetes.io/auth-realm: "Authentication Required - MLflow"
+  # Empty: the rule matches every host. Set your domain here if you have one.
+  host: ""
+
+mlflow:
+  # Without ingress.host, add the external IP of the Ingress at install time (see docs/scaleway.md):
+  #   --set "mlflow.allowedHosts={<EXTERNAL_IP>}" --set "mlflow.corsAllowedOrigins={http://<EXTERNAL_IP>}"
+  allowedHosts: []
+  corsAllowedOrigins: []
+
+postgresql:
+  auth:
+    existingSecret: mlflow-credentials
+  persistence:
+    size: 2Gi
+
+s3:
+  existingSecret: mlflow-credentials
+  # AWS S3: leave empty. Scaleway Object Storage: "https://s3.fr-par.scw.cloud" with region "fr-par".
+  endpointUrl: ""
+  region: eu-west-3
+
+# Set your bucket with --set artifacts.destination=s3://<your-bucket>/mlflow-artifacts
+artifacts:
+  destination: s3://my-mlflow-bucket/mlflow-artifacts
+
+moto:
+  enabled: false

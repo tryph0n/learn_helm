@@ -1,0 +1,64 @@
+{{- if .Values.moto.enabled }}
+{{- $fullname := include "mlflow.moto.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "mlflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: s3
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "mlflow.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: s3
+  ports:
+    - name: s3
+      port: {{ .Values.moto.port }}
+      targetPort: s3
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "mlflow.labels" . | nindent 4 }}
+    app.kubernetes.io/component: s3
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "mlflow.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: s3
+  template:
+    metadata:
+      labels:
+        {{- include "mlflow.labels" . | nindent 8 }}
+        app.kubernetes.io/component: s3
+    spec:
+      serviceAccountName: {{ include "mlflow.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.moto.podSecurityContext | nindent 8 }}
+      containers:
+        - name: moto
+          image: {{ printf "%s:%s" .Values.moto.image.repository .Values.moto.image.tag }}
+          imagePullPolicy: {{ .Values.moto.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.moto.securityContext | nindent 12 }}
+          env:
+            - name: MOTO_PORT
+              value: {{ .Values.moto.port | quote }}
+          ports:
+            - name: s3
+              containerPort: {{ .Values.moto.port }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /moto-api/
+              port: s3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.moto.resources | nindent 12 }}
+{{- end }}

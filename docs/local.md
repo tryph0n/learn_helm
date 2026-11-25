@@ -1,13 +1,13 @@
 # Local Deployment (k3s)
 
-Complete guide to deploy MLflow on a local k3s cluster.
+Complete guide to deploy MLflow on a local k3s cluster with the Helm chart and `charts/mlflow/values-local.yaml`. The chart runs PostgreSQL and a local S3 server (moto) in the cluster: you need no AWS account.
 
 ## Prerequisites
 
 - [k3s](https://k3s.io/) installed and running (`sudo k3s server` or installed as a service)
 - `kubectl` configured to point to the k3s cluster (automatic with k3s)
-- `helm` v3+ installed
-- An AWS S3 bucket (or S3-compatible storage) for artifacts
+- `helm` installed (CI uses v4.3.0)
+- `openssl`, to generate the database password
 
 ### kubectl and KUBECONFIG setup for k3s
 
@@ -25,91 +25,62 @@ sudo chmod 644 /etc/rancher/k3s/k3s.yaml
 
 ```bash
 cp .env.example .env
+# Generate a database password (letters and digits only: it goes into a connection URI)
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 24)/" .env
 ```
 
-Edit `.env` and fill in the variables from the **Common** section:
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| PORT | MLflow server port | `8080` |
-| BACKEND_STORE_URI | PostgreSQL URI | `postgresql://mlflow:password@mlflow-db-postgresql:5432/mlflow_db` |
-| ARTIFACT_ROOT | S3 path | `s3://my-bucket/mlflow-artifacts/` |
-| AWS_ACCESS_KEY_ID | AWS key | `AKIA...` |
-| AWS_SECRET_ACCESS_KEY | AWS secret | `wJal...` |
-| POSTGRES_USER | PostgreSQL user | `mlflow` |
-| POSTGRES_PASSWORD | PostgreSQL password | (strong password) |
-| POSTGRES_DB | Database name | `mlflow_db` |
-| POSTGRES_ADMIN_PASSWORD | Admin password | (strong password) |
-| MLFLOW_TRACKING_URI | Local tracking URI | `http://localhost:5000` |
+| Variable | Description | Local value |
+|----------|-------------|-------------|
+| MLFLOW_TRACKING_URI | Tracking URI for `train.py` | `http://localhost:5000` |
+| POSTGRES_PASSWORD | PostgreSQL password | output of `openssl rand -hex 24` |
+| AWS_ACCESS_KEY_ID | S3 key of the MLflow server | any value: moto accepts all keys |
+| AWS_SECRET_ACCESS_KEY | S3 secret of the MLflow server | any value: moto accepts all keys |
 
 > **Note**: The authentication variables (the "Scaleway only" section in `.env.example`) are not required in local mode. You can safely ignore them.
 
----
-
-## Step 2: Install PostgreSQL via Helm
-
-```bash
-helm repo add bitnami https://charts.bitnami.com/bitnami
-helm repo update
-```
+Create the Secret `mlflow-credentials`. The chart creates no Secret: it reads this one.
 
 ```bash
 source .env
-helm install mlflow-db bitnami/postgresql -f values-postgresql.yaml \
-  --set auth.username=$POSTGRES_USER \
-  --set auth.password=$POSTGRES_PASSWORD \
-  --set auth.database=$POSTGRES_DB \
-  --set auth.postgresPassword=$POSTGRES_ADMIN_PASSWORD
+kubectl create secret generic mlflow-credentials \
+  --from-literal=postgres-password="$POSTGRES_PASSWORD" \
+  --from-literal=aws-access-key-id="$AWS_ACCESS_KEY_ID" \
+  --from-literal=aws-secret-access-key="$AWS_SECRET_ACCESS_KEY"
 ```
+
+---
+
+## Step 2: Install MLflow with the Helm chart
+
+```bash
+helm install mlflow charts/mlflow -f charts/mlflow/values-local.yaml --wait --timeout 10m
+```
+
+The chart pulls `ghcr.io/tryph0n/mlflow-k8s-helm:3.18.0-1`. CI publishes this image from the `main` branch. If the pull fails (`ImagePullBackOff`), or to use an image that you build yourself, see [Use a local image](#use-a-local-image).
+
+The release starts three pods:
+
+- `mlflow-...`: the MLflow server. Its init container waits for PostgreSQL and moto, then creates the bucket `mlflow`.
+- `mlflow-postgresql-0`: PostgreSQL, with the volume claim `data-mlflow-postgresql-0` (2Gi).
+- `mlflow-moto-...`: the local S3 server. It keeps the data in memory: the artifacts are lost when this pod restarts.
 
 ### Verify
 
 ```bash
-kubectl get pods
+kubectl get pods -l app.kubernetes.io/instance=mlflow
+helm test mlflow --logs
 ```
 
-Wait until `mlflow-db-postgresql-0` shows a `Running` status.
-
-```bash
-kubectl logs mlflow-db-postgresql-0
-```
-
-The message `database system is ready to accept connections` confirms that PostgreSQL is up and running.
+`helm test` starts a pod that calls `/health` on the MLflow Service. The output ends with `Phase: Succeeded`.
 
 ---
 
-## Step 3: Deploy MLflow
-
-### Create the application secret
-
-```bash
-kubectl create secret generic mlflow-env-variables --from-env-file=.env
-```
-
-### Apply the manifests
-
-```bash
-kubectl apply -f k8s/common/mlflow_deployment.yaml
-kubectl apply -f k8s/local/mlflow_service.yaml
-```
-
-### Verify
-
-```bash
-kubectl get pods -l app=mlflow-dashboard
-kubectl get svc mlflow-service
-```
-
-Wait until both pods show a `Running` status.
-
----
-
-## Step 4: Access MLflow
+## Step 3: Access MLflow
 
 ### Option 1: Port-forward (recommended)
 
 ```bash
-kubectl port-forward svc/mlflow-service 5000:5000
+kubectl port-forward svc/mlflow 5000:5000
 ```
 
 Verify the connection is working:
@@ -125,23 +96,25 @@ Then open http://localhost:5000 in your browser.
 The service is of type NodePort. Retrieve the assigned port:
 
 ```bash
-kubectl get svc mlflow-service
+kubectl get svc mlflow
 ```
 
 The `PORT(S)` column displays `5000:3xxxx/TCP`. Access it at `http://NODE_IP:3xxxx`.
 
-On k3s, the NODE_IP is usually `127.0.0.1` or the machine's IP address.
+On k3s, the NODE_IP is usually `127.0.0.1` or the machine's IP address. The chart allows `127.0.0.1` and the private IP ranges (`10.*`, `172.16.*` to `172.31.*`, `192.168.*`) in the MLflow host check. For another address, add it with `--set "mlflow.allowedHosts={<NODE_IP>}"`.
+
+> **Note**: MLflow refuses changes (POST, PUT, DELETE) from a browser page that is not on `localhost` or `127.0.0.1`. To use the UI on `http://NODE_IP:3xxxx`, add `--set "mlflow.corsAllowedOrigins={http://NODE_IP:3xxxx}"`. Scripts such as `train.py` are not affected.
 
 > **Note**: If you use NodePort instead of port-forward, update `MLFLOW_TRACKING_URI` in your `.env` file to match the NodePort URL (e.g. `http://127.0.0.1:3xxxx`) instead of `http://localhost:5000`.
 
 ---
 
-## Step 5: Test with a training script
+## Step 4: Test with a training script
 
 In a first terminal, start the port-forward:
 
 ```bash
-kubectl port-forward svc/mlflow-service 5000:5000
+kubectl port-forward svc/mlflow 5000:5000
 ```
 
 In a second terminal, install the Python dependencies:
@@ -156,7 +129,7 @@ Then run the training script:
 uv run python train.py --n_estimators 100 --min_samples_split 2
 ```
 
-> **Note**: `train.py` calls `load_dotenv()` via `python-dotenv`, so `MLFLOW_TRACKING_URI=http://localhost:5000` from your `.env` file is loaded automatically without any manual `export`.
+> **Note**: `train.py` calls `load_dotenv()` via `python-dotenv`, so `MLFLOW_TRACKING_URI=http://localhost:5000` from your `.env` file is loaded automatically without any manual `export`. The script needs no S3 keys: the MLflow server stores the artifacts.
 
 Check the results in the MLflow UI (http://localhost:5000): experiment, runs, metrics, and registered model.
 
@@ -164,23 +137,40 @@ Check the results in the MLflow UI (http://localhost:5000): experiment, runs, me
 
 ## Updating
 
+### Change the chart values
+
+Edit `charts/mlflow/values-local.yaml` (or add `--set` options), then:
+
+```bash
+helm upgrade mlflow charts/mlflow -f charts/mlflow/values-local.yaml --wait --timeout 10m
+```
+
+`helm upgrade` does not keep the `--set` options of earlier commands. If you use a local image, add its `--set image.*` options again (see [Use a local image](#use-a-local-image)).
+
 ### Update secrets
 
 ```bash
-kubectl delete secret mlflow-env-variables
-kubectl create secret generic mlflow-env-variables --from-env-file=.env
-kubectl rollout restart deployment mlflow-deployment
+source .env
+kubectl delete secret mlflow-credentials
+kubectl create secret generic mlflow-credentials \
+  --from-literal=postgres-password="$POSTGRES_PASSWORD" \
+  --from-literal=aws-access-key-id="$AWS_ACCESS_KEY_ID" \
+  --from-literal=aws-secret-access-key="$AWS_SECRET_ACCESS_KEY"
+kubectl rollout restart deployment mlflow
 ```
 
-### Update PostgreSQL
+> **Note**: PostgreSQL reads the password only when it creates the database. To change the password of an existing database, change it in PostgreSQL too (`ALTER USER mlflow PASSWORD '...'`), or delete the volume claim (this deletes the data).
+
+### Use a local image
+
+Build the image, import it into k3s, then install with `image.pullPolicy=Never`:
 
 ```bash
-source .env
-helm upgrade mlflow-db bitnami/postgresql -f values-postgresql.yaml \
-  --set auth.username=$POSTGRES_USER \
-  --set auth.password=$POSTGRES_PASSWORD \
-  --set auth.database=$POSTGRES_DB \
-  --set auth.postgresPassword=$POSTGRES_ADMIN_PASSWORD
+docker build -t mlflow-k8s-helm:dev images_mlflow
+docker save mlflow-k8s-helm:dev | sudo k3s ctr images import -
+helm upgrade --install mlflow charts/mlflow -f charts/mlflow/values-local.yaml \
+  --set image.repository=mlflow-k8s-helm --set image.tag=dev --set image.pullPolicy=Never \
+  --wait --timeout 10m
 ```
 
 ---
@@ -188,14 +178,28 @@ helm upgrade mlflow-db bitnami/postgresql -f values-postgresql.yaml \
 ## Full cleanup
 
 ```bash
-kubectl delete -f k8s/local/mlflow_service.yaml
-kubectl delete -f k8s/common/mlflow_deployment.yaml
-kubectl delete secret mlflow-env-variables
-helm uninstall mlflow-db
-kubectl delete pvc data-mlflow-db-postgresql-0
+helm uninstall mlflow
+kubectl delete pvc data-mlflow-postgresql-0
+kubectl delete secret mlflow-credentials
 ```
 
 > **Warning**: Deleting the PVC permanently destroys all PostgreSQL data. This action is irreversible.
+
+---
+
+## Smoke test (k3d, as in CI)
+
+CI runs the same chart on a [k3d](https://k3d.io/) cluster (k3s in Docker) with `scripts/smoke_test.sh`. You can run it locally on a new k3d cluster:
+
+```bash
+docker build -t mlflow-k8s-helm:dev images_mlflow
+k3d cluster create smoke --image rancher/k3s:v1.37.2-k3s1
+k3d image import mlflow-k8s-helm:dev -c smoke
+TAG=dev scripts/smoke_test.sh
+k3d cluster delete smoke
+```
+
+The script refuses to run when the kubectl context is not a k3d cluster. To run it on your k3s cluster, set `SMOKE_ANY_CONTEXT=1` (it installs the release `mlflow` there).
 
 ---
 
@@ -204,26 +208,27 @@ kubectl delete pvc data-mlflow-db-postgresql-0
 ### PostgreSQL does not start
 
 ```bash
-kubectl describe pod mlflow-db-postgresql-0
-kubectl logs mlflow-db-postgresql-0
+kubectl describe pod mlflow-postgresql-0
+kubectl logs mlflow-postgresql-0
 kubectl get pvc
 ```
 
-Common causes: PVC stuck in Pending (StorageClass not available), incorrect credentials.
+Common causes: PVC stuck in Pending (StorageClass not available), Secret `mlflow-credentials` missing.
 
-### MLflow pods in CrashLoopBackOff
+### MLflow pod not Ready or in CrashLoopBackOff
 
 ```bash
-kubectl logs -l app=mlflow-dashboard --tail=100
-kubectl describe pod -l app=mlflow-dashboard
+kubectl logs deploy/mlflow -c wait-for-dependencies
+kubectl logs deploy/mlflow -c mlflow --tail=100
+kubectl describe pod -l app.kubernetes.io/instance=mlflow,app.kubernetes.io/component=server
 ```
 
-Common causes: PostgreSQL not yet Ready, incorrect BACKEND_STORE_URI, invalid AWS credentials.
+Common causes: PostgreSQL not yet Ready, a database password with `@`, `:`, `/` or `%`, an error `Invalid Host header` (see Option 2 above). Status `OOMKilled`: lower `mlflow.workers` or raise `resources.limits.memory`.
 
 ### Port-forward not working
 
 ```bash
-kubectl get endpoints mlflow-service
+kubectl get endpointslices -l kubernetes.io/service-name=mlflow
 ```
 
-If the endpoints are empty, the MLflow pods are not Ready.
+If the `ENDPOINTS` column is empty, the MLflow pod is not Ready.

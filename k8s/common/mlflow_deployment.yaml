@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: mlflow-server
-          image: sambot961/image-mlflow
+          image: ghcr.io/tryph0n/mlflow-k8s-helm:3.18.0-1
           imagePullPolicy: Always
           envFrom:
             - secretRef:

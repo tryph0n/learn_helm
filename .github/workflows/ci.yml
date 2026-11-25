@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HELM_VERSION: v4.3.0
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  K3D_VERSION: v5.9.0
+  K3D_SHA256: 06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0
+  K3S_IMAGE: rancher/k3s:v1.37.2-k3s1
+  KUBERNETES_VERSION: 1.37.2
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+      - run: uv run python scripts/check_readme_links.py
+
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: azure/setup-helm@v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kubeconform.tar.gz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" -C "$RUNNER_TEMP/bin" kubeconform
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Lint and validate the chart with both values files
+        run: |
+          for v in local scaleway; do
+            helm lint --strict charts/mlflow -f "charts/mlflow/values-$v.yaml"
+            helm template mlflow charts/mlflow -f "charts/mlflow/values-$v.yaml" > "$RUNNER_TEMP/rendered-$v.yaml"
+            kubeconform -strict -summary -kubernetes-version "$KUBERNETES_VERSION" "$RUNNER_TEMP/rendered-$v.yaml"
+          done
+      - name: Check image tags and that the chart renders no Secret
+        run: |
+          status=0
+          for f in "$RUNNER_TEMP"/rendered-*.yaml; do
+            while read -r image; do
+              ref="${image##*/}"
+              tag="${ref#*:}"
+              if [[ "$ref" != *:* || -z "$tag" || "$tag" == latest ]]; then
+                echo "::error::$(basename "$f"): image without a fixed tag: $image"
+                status=1
+              fi
+            done < <(sed -n 's/^ *image: *//p' "$f" | tr -d '"' | sort -u)
+            if grep -Eq "^kind:[[:space:]]*[\"']?Secret[\"']?[[:space:]]*$" "$f"; then
+              echo "::error::$(basename "$f"): the chart must not render a Secret"
+              status=1
+            fi
+          done
+          exit "$status"
+      - name: Check that the MLflow version is the same everywhere
+        run: |
+          pyproject="$(sed -n 's/^ *"mlflow==\([^"]*\)".*/\1/p' pyproject.toml)"
+          requirements="$(sed -n 's/^mlflow==//p' images_mlflow/requirements.txt)"
+          app_version="$(helm show chart charts/mlflow | sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p')"
+          image="$(awk '/^ *image: .*mlflow-k8s-helm/ { gsub(/"/, "", $2); print $2; exit }' "$RUNNER_TEMP/rendered-local.yaml")"
+          image_tag="${image##*:}"
+          echo "pyproject.toml: $pyproject, requirements.txt: $requirements, appVersion: $app_version, image tag: $image_tag"
+          for version in "$requirements" "$app_version" "${image_tag%-*}"; do
+            if [[ -z "$pyproject" || "$version" != "$pyproject" ]]; then
+              echo "::error::the MLflow versions differ"
+              exit 1
+            fi
+          done
+
+  smoke:
+    needs: [python, chart]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: azure/setup-helm@v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Build the MLflow image
+        run: docker build --platform linux/amd64 -t mlflow-k8s-helm:ci images_mlflow
+      - name: Install k3d
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/k3d" \
+            "https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}/k3d-linux-amd64"
+          echo "${K3D_SHA256}  $RUNNER_TEMP/bin/k3d" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bin/k3d"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Create a k3d cluster with the local image
+        run: |
+          k3d cluster create smoke --image "$K3S_IMAGE" --wait --timeout 300s
+          k3d image import mlflow-k8s-helm:ci -c smoke
+      - name: Run the smoke test
+        run: TAG=ci scripts/smoke_test.sh
+
+  publish:
+    needs: smoke
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: azure/setup-helm@v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - uses: docker/setup-qemu-action@v4.4.0
+      - uses: docker/setup-buildx-action@v4.4.1
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Choose the image tags
+        id: tags
+        run: |
+          image="$(helm template mlflow charts/mlflow -f charts/mlflow/values-local.yaml --show-only templates/deployment.yaml \
+            | awk '/^ *image:/ { gsub(/"/, "", $2); print $2; exit }')"
+          repository="${image%:*}"
+          version_tag="${image##*:}"
+          tags="${repository}:sha-${GITHUB_SHA::7}"
+          # The version tag is pushed once. New image content needs a new revision in values.yaml.
+          if docker buildx imagetools inspect "${repository}:${version_tag}" > /dev/null 2>&1; then
+            echo "${repository}:${version_tag} exists: it is not pushed again"
+          else
+            tags="${tags},${repository}:${version_tag}"
+          fi
+          echo "tags: $tags"
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "version=${version_tag}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v7.4.0
+        with:
+          context: images_mlflow
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.description=MLflow tracking server image used by the Helm chart
